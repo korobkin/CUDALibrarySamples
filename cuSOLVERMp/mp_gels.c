@@ -26,6 +26,7 @@
 
 #include <omp.h>
 #include <mpi.h>
+#include <nccl.h>
 
 #include <cusolverMp.h>
 

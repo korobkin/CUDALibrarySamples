@@ -49,6 +49,9 @@ function(build_sample sample_name)
         cusolver
         cusolverMp
         cuda
+        nccl
+        cal
+        ucc
         nvidia-ml
         m
     )

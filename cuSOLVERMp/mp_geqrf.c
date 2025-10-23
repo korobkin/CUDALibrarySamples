@@ -24,6 +24,8 @@
 #include <math.h>
 
 #include <mpi.h>
+#include <nccl.h>
+#include <cal.h>
 
 #include <cusolverMp.h>
 
@@ -77,19 +79,66 @@ static void print_host_matrix(int64_t M, int64_t N, double* A, int64_t lda, cons
     }
 }
 
+calError_t allgather(void* src_buf, void* recv_buf, size_t size, void* data, void** request)
+{
+    MPI_Request req;
+    int err = MPI_Iallgather(src_buf, size, MPI_BYTE, recv_buf, size, MPI_BYTE, (MPI_Comm)data, &req);
+    if (err != MPI_SUCCESS)
+    {
+        return CAL_ERROR;
+    }
+    *request = (void*)req;
+    return CAL_OK;
+}
+
+calError_t request_test(void* request)
+{
+    MPI_Request req = (MPI_Request)request;
+    int         completed;
+    int         err = MPI_Test(&req, &completed, MPI_STATUS_IGNORE);
+    if (err != MPI_SUCCESS)
+    {
+        return CAL_ERROR;
+    }
+    return completed ? CAL_OK : CAL_ERROR_INPROGRESS;
+}
+
+calError_t request_free(void* request)
+{
+    return CAL_OK;
+}
+
+calError_t cal_comm_create_mpi(MPI_Comm mpi_comm, int rank, int nranks, int local_device, cal_comm_t* comm)
+{
+    cal_comm_create_params_t params;
+    params.allgather = allgather;
+    params.req_test = request_test;
+    params.req_free = request_free;
+    params.data = (void*)mpi_comm;
+    params.rank = rank;
+    params.nranks = nranks;
+    params.local_device = local_device;
+    return cal_comm_create(params, comm);
+}
+
+int CUDA_CHECK(cudaError_t cudaStat){
+    assert(cudaStat == cudaSuccess);
+    return 0;
+}
+
 int main(int argc, char* argv[])
 {
-    Options opts = { .m           = 10,
-                     .n           = 10,
+    Options opts = { .m           = 600,
+                     .n           = 300,
                      .nrhs        = 1,
-                     .mbA         = 24,
-                     .nbA         = 24,
-                     .mbB         = 24,
-                     .nbB         = 24,
-                     .mbQ         = 24,
-                     .nbQ         = 24,
-                     .mbZ         = 24,
-                     .nbZ         = 24,
+                     .mbA         = 300,
+                     .nbA         = 300,
+                     .mbB         = 5,
+                     .nbB         = 5,
+                     .mbQ         = 5,
+                     .nbQ         = 5,
+                     .mbZ         = 5,
+                     .nbZ         = 5,
                      .ia          = 1,
                      .ja          = 1,
                      .ib          = 1,
@@ -157,6 +206,8 @@ int main(int argc, char* argv[])
      * system-dependent. For example, setting one device per process,
      * Summit always sees the local device as device 0.
      */
+    int localDeviceCount = 0;
+    cudaGetDeviceCount(&localDeviceCount);
     const int localDeviceId = getLocalRank();
 
     cudaStat = cudaSetDevice(localDeviceId);
@@ -164,9 +215,10 @@ int main(int argc, char* argv[])
     cudaStat = cudaFree(0);
     assert(cudaStat == cudaSuccess);
 
+////// NCCL PATH ///////////////////
+//
     /* Create communicator */
     ncclUniqueId id;
-
     if (rank == 0)
     {
         ncclGetUniqueId(&id);
@@ -174,9 +226,15 @@ int main(int argc, char* argv[])
 
     MPI_Bcast((void*)&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD);
 
-    ncclComm_t comm;
-    ncclStat = ncclCommInitRank(&comm, commSize, id, rank);
-    assert(ncclStat == ncclSuccess);
+   ncclComm_t nccl_comm;
+   ncclStat = ncclCommInitRank(&nccl_comm, commSize, id, rank);
+   assert(ncclStat == ncclSuccess);
+//
+////// END NCCL PATH ///////////////////
+
+//////// CAL PATH ///////////
+cal_comm_t cal_comm = NULL;
+CUDA_CHECK(cal_comm_create_mpi(MPI_COMM_WORLD, rank, commSize, localDeviceId, &cal_comm));
 
     /* Create local stream */
     cudaStat = cudaStreamCreate(&localStream);
@@ -238,6 +296,8 @@ int main(int argc, char* argv[])
     if (rank == 0)
     {
         /* allocate host workspace */
+printf("[%d/%d] lda, colsA = %d, %d\n", rank, commSize, lda, colsA);
+        
         h_A  = (double*)malloc(lda * colsA * sizeof(double));
         h_QR = (double*)malloc(lda * colsA * sizeof(double));
         memset(h_A, 0, lda * colsA * sizeof(double));
@@ -267,6 +327,7 @@ int main(int argc, char* argv[])
         myRowRank = rank / numColDevices;
         myColRank = rank % numColDevices;
     }
+printf("[%d/%d] myRowRank,myColRank = %d, %d\n", rank, commSize, myRowRank, myColRank);
 
     /*
      * Compute number of tiles per rank to store local portion of A
@@ -280,6 +341,7 @@ int main(int argc, char* argv[])
      */
     const int64_t LLDA       = cusolverMpNUMROC(lda, MA, myRowRank, RSRCA, numRowDevices);
     const int64_t localColsA = cusolverMpNUMROC(colsA, NA, myColRank, CSRCA, numColDevices);
+printf("[%d/%d] LLDA,localColsA = %d, %d\n", rank, commSize,LLDA,localColsA);
 
     /*
      * Compute number of tiles per rank to store local portion of B
@@ -294,24 +356,29 @@ int main(int argc, char* argv[])
     /* Allocate global d_A */
     cudaStat = cudaMalloc((void**)&d_A, localColsA * LLDA * sizeof(double));
     assert(cudaStat == cudaSuccess);
+printf("[%d/%d] d_A              => %x\n", rank, commSize, d_A);
 
     /* =========================================== */
     /*          CREATE GRID DESCRIPTORS            */
     /* =========================================== */
-    cusolverStat = cusolverMpCreateDeviceGrid(cusolverMpHandle, &gridA, comm, numRowDevices, numColDevices, gridLayout);
+    cusolverStat = cusolverMpCreateDeviceGrid(cusolverMpHandle, &gridA, cal_comm, numRowDevices, numColDevices, gridLayout);
     assert(cusolverStat == CUSOLVER_STATUS_SUCCESS);
+printf("[%d/%d] cusolverMpHandle => %x\n", rank, commSize, cusolverMpHandle);
+printf("[%d/%d] gridA            => %x\n", rank, commSize, gridA);
 
     /* =========================================== */
     /*        CREATE MATRIX DESCRIPTORS            */
     /* =========================================== */
     cusolverStat = cusolverMpCreateMatrixDesc(
             &descrA, gridA, CUDA_R_64F, (IA - 1) + M, (JA - 1) + N, MA, NA, RSRCA, CSRCA, LLDA);
+printf("[%d/%d] descrA           => %x\n", rank, commSize, descrA);
 
     assert(cusolverStat == CUSOLVER_STATUS_SUCCESS);
 
     /* Allocate global d_tau */
     cudaStat = cudaMalloc((void**)&d_tau, localColsA * sizeof(double));
     assert(cudaStat == cudaSuccess);
+printf("[%d/%d] d_tau            => %x\n", rank, commSize, d_tau);
 
     /* =========================================== */
     /*             ALLOCATE D_INFO                 */
@@ -319,6 +386,7 @@ int main(int argc, char* argv[])
 
     cudaStat = cudaMalloc((void**)&d_info_geqrf, sizeof(int));
     assert(cudaStat == cudaSuccess);
+printf("[%d/%d] d_info_geqrf     => %x\n", rank, commSize, d_info_geqrf);
 
     /* =========================================== */
     /*                RESET D_INFO                 */
@@ -330,7 +398,6 @@ int main(int argc, char* argv[])
     /* =========================================== */
     /*     QUERY WORKSPACE SIZE FOR MP ROUTINES    */
     /* =========================================== */
-
     cusolverStat = cusolverMpGeqrf_bufferSize(cusolverMpHandle,
                                               M,
                                               N,
@@ -343,6 +410,7 @@ int main(int argc, char* argv[])
                                               &workspaceInBytesOnHost_geqrf);
     assert(cusolverStat == CUSOLVER_STATUS_SUCCESS);
 
+
     /* =========================================== */
     /*         ALLOCATE Pgeqrf WORKSPACE            */
     /* =========================================== */
@@ -352,7 +420,6 @@ int main(int argc, char* argv[])
 
     h_work_geqrf = (void*)malloc(workspaceInBytesOnHost_geqrf);
     assert(h_work_geqrf != NULL);
-
 
     /* =========================================== */
     /*      SCATTER MATRICES A AND B FROM MASTER   */
@@ -662,9 +729,11 @@ int main(int argc, char* argv[])
     cudaStat = cudaStreamSynchronize(localStream);
     assert(cudaStat == cudaSuccess);
 
+///// NCCL PATH ///////    
     /* destroy nccl communicator */
-    ncclStat = ncclCommDestroy(comm);
+    ncclStat = ncclCommDestroy(nccl_comm);
     assert(ncclStat == ncclSuccess);
+///// NED NCCL PATH ///
 
     /* destroy user stream */
     cudaStat = cudaStreamDestroy(localStream);
