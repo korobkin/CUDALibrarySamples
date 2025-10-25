@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <mpi.h>
+#include <nccl.h>
 
 typedef struct _Options
 {

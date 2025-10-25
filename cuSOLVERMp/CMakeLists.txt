@@ -31,13 +31,11 @@ function(build_sample sample_name)
         ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
         ${MPI_C_INCLUDE_DIRS}
         ${NCCL_INCLUDE_DIR}
-        ${CUSOLVERMP_INCLUDE_DIRECTORIES}
     )
 
     target_link_directories(${sample_name} PUBLIC
         ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES}
         ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES}/stubs
-        ${CUSOLVERMP_LINK_DIRECTORIES}
     )
 
     target_link_libraries(${sample_name} PUBLIC
@@ -47,11 +45,14 @@ function(build_sample sample_name)
         cublas
         cublasLt
         cusolver
-        cusolverMp
+        ${CUSOLVERMP_LINK_DIRECTORIES}/libcusolverMp.so
         cuda
         nvidia-ml
         m
     )
+
+    target_link_options(${sample_name} PRIVATE
+        "-Wl,-rpath,${CUSOLVERMP_LINK_DIRECTORIES}")
 
     install(TARGETS ${sample_name}
         DESTINATION "bin/"
@@ -66,3 +67,4 @@ build_sample("mp_geqrf")
 build_sample("mp_syevd")
 build_sample("mp_sygvd")
 build_sample("mp_gels")
+

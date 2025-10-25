@@ -79,11 +79,11 @@ static void print_host_matrix(int64_t M, int64_t N, double* A, int64_t lda, cons
 
 int main(int argc, char* argv[])
 {
-    Options opts = { .m           = 10,
-                     .n           = 10,
+    Options opts = { .m           = 6000,
+                     .n           = 3000,
                      .nrhs        = 1,
-                     .mbA         = 24,
-                     .nbA         = 24,
+                     .mbA         = 3000,
+                     .nbA         = 3000,
                      .mbB         = 24,
                      .nbB         = 24,
                      .mbQ         = 24,
@@ -160,6 +160,7 @@ int main(int argc, char* argv[])
     const int localDeviceId = getLocalRank();
 
     cudaStat = cudaSetDevice(localDeviceId);
+//fprintf(stderr, "cudaSetDevice(%d) failed: %s (%d)\n", localDeviceId, cudaGetErrorString(cudaStat), (int)cudaStat);
     assert(cudaStat == cudaSuccess);
     cudaStat = cudaFree(0);
     assert(cudaStat == cudaSuccess);
@@ -176,6 +177,7 @@ int main(int argc, char* argv[])
 
     ncclComm_t comm;
     ncclStat = ncclCommInitRank(&comm, commSize, id, rank);
+// fprintf(stderr, "NCCL init failed: %s (rank=%d size=%d)\n", ncclGetErrorString(ncclStat), rank, commSize);
     assert(ncclStat == ncclSuccess);
 
     /* Create local stream */
@@ -306,6 +308,7 @@ int main(int argc, char* argv[])
     /* =========================================== */
     cusolverStat = cusolverMpCreateMatrixDesc(
             &descrA, gridA, CUDA_R_64F, (IA - 1) + M, (JA - 1) + N, MA, NA, RSRCA, CSRCA, LLDA);
+printf ("descrA, gridA = %x, %x\n", descrA, gridA);            
 
     assert(cusolverStat == CUSOLVER_STATUS_SUCCESS);
 
@@ -342,6 +345,8 @@ int main(int argc, char* argv[])
                                               &workspaceInBytesOnDevice_geqrf,
                                               &workspaceInBytesOnHost_geqrf);
     assert(cusolverStat == CUSOLVER_STATUS_SUCCESS);
+printf("M, N, d_A, descrA = %d, %d, %x, %x\n", M, N, d_A, descrA);
+printf("&workspaceInBytesOnDevice_geqrf, &workspaceInBytesOnHost_geqrf = %d, %d\n", workspaceInBytesOnHost_geqrf, workspaceInBytesOnHost_geqrf);    
 
     /* =========================================== */
     /*         ALLOCATE Pgeqrf WORKSPACE            */
