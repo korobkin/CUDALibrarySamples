@@ -62,6 +62,16 @@ cuSOLVERMp is distributed through [NVIDIA Developer Zone](https://developer.nvid
 
 ### Building
 
+If building with SDK earlier than v.25.9, for NCCL to work,
+install cusolverMp separately from e.g.
+[DevZone](https://developer.nvidia.com/cusolvermp-downloads)
+For installing without admin priviledges, unpack RPM using
+the command `rpm2cpio <rpm> | cpio -idmv`. If RPM is an RPM
+bundle, unpack the RPMs again. 
+Use `libcusolvermp0-cuda-*.rpm` and `libcusolvermp0-devel-cuda-*.rpm` packages.
+Supply the directory with custom cusolverMp in the 
+`CUSOLVERMP_HOME` variable.
+
 ```
 git clone https://github.com/NVIDIA/CUDALibrarySamples.git
 cd CUDALibrarySamples/cuSOLVERMp
@@ -72,7 +82,12 @@ export CUSOLVERMP_HOME=<path/to/cusolvermp>
 export NCCL_HOME=<path/to/nccl>
 source ${HPCXROOT}/hpcx-mt-init-ompi.sh
 hpcx_load
-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="80;90;100;120" -DCUSOLVERMP_INCLUDE_DIRECTORIES=${CUSOLVERMP_HOME}/include -DCUSOLVERMP_LINK_DIRECTORIES=${CUSOLVERMP_HOME}/lib/ -DNCCL_INCLUDE_DIR=${NCCL_HOME}/include -DNCCL_LIBRARIES=${NCCL_HOME}/lib/libnccl.so
+cmake .. -DCMAKE_BUILD_TYPE=Release \
+         -DCMAKE_CUDA_ARCHITECTURES="80;90;100;120" \
+         -DCUSOLVERMP_INCLUDE_DIRECTORIES=${CUSOLVERMP_HOME}/include \
+         -DCUSOLVERMP_LINK_DIRECTORIES=${CUSOLVERMP_HOME}/lib/ \
+         -DNCCL_INCLUDE_DIR=${NCCL_HOME}/include \
+         -DNCCL_LIBRARIES=${NCCL_HOME}/lib/libnccl.so
 make -j
 ```
 
